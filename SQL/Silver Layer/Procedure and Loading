@@ -1,0 +1,310 @@
+/* ==============================================================================
+   1. SET THE CORRECT DATABASE
+============================================================================== */
+USE HealthcareDataWarehouse;
+GO
+
+/* ==============================================================================
+   AUTOMATED PIPELINE PROCEDURE (SILVER LOAD & TRANSFORMATION)
+============================================================================== */
+CREATE OR ALTER PROCEDURE ops.sp_run_healthcare_silver_load
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @job_id UNIQUEIDENTIFIER;
+    DECLARE @rows_affected INT;
+
+    BEGIN TRY
+        -- 1. Start Job
+        EXEC ops.sp_start_job 
+            @pipeline_name = 'Healthcare Silver Transformation',
+            @job_run_id = @job_id OUTPUT;
+
+        -- 2. Start Task
+        EXEC ops.sp_start_task 
+            @job_run_id = @job_id,
+            @task_name = 'Transform & Clean Bronze to Silver';
+
+        --------------------------------------------------
+        -- Truncate Silver to ensure a fresh load 
+        TRUNCATE TABLE silver.Healthcare_Dataset;
+        
+        -- Insert data into Silver including lineage and new enriched columns
+        INSERT INTO silver.Healthcare_Dataset (
+            batch_id, pipeline_name,
+            patient_id, patient_name, birth_year, sex, state, encounter_id, icd10_code, diagnosis_display,
+            severity_index, comorbidity_count, has_diabetes, has_hypertension, has_chf,
+            hba1c_pct, creatinine_mg_dl, medication_adherence_pdc, hai_flag, follow_up_within_48h_flag,
+            sbp_mmhg, dbp_mmhg, heart_rate_bpm, spo2_pct, temperature_f, bmi, respiratory_rate,
+            glucose_mg_dl, wbc_10e3_ul, nt_probnp_pg_ml,
+            triage_timestamp, physician_assessment_timestamp, admit_timestamp, bed_request_time,
+            bed_assign_time, discharge_timestamp, unit_assigned, bed_occupancy_pct, days_since_last_stay,
+            wait_time_mins, bed_lag_mins, true_los_days,
+            safety_incident_flag, incident_type, incident_severity, pdsa_cycle_id, 
+            claim_denial_flag, denial_reason_code, claim_id, payer, payer_id, npi_billing, drg_weight, 
+            submitted_charge_usd, allowed_amount_usd, patient_responsibility_usd, 
+            true_patient_resp, billing_error_amount, contractual_adjustment,
+            nurse_emp_id, nurse_name, nurse_role, nurse_unit, 
+            doc_emp_id, doctor_name, doctor_specialty,
+            shift_hours, patients_per_nurse_ratio, overtime_hours, burnout_cynicism_mbi, turnover_risk_index, staff_burnout_category,
+            cahps_nurse_communication, cahps_doctor_communication, cahps_responsiveness,
+            cahps_pain_management, cahps_discharge_info, cahps_care_transition, cahps_cleanliness, cahps_quietness,
+            telehealth_used_flag, patient_reported_wait_time_mins, hedis_hba1c_tested, hedis_hba1c_poor_control, himss_emram_stage,
+            
+            -- 👇 New Business Logic columns added here
+            patient_age_at_admit, age_group, sla_breached_flag, prev_discharge_flag, is_readmit_30d, hypertensive_crisis_flag, write_off_pct, 
+            
+            -- 🟢 New column added for the Quality Check
+            sequence_status, 
+            
+            -- 👇 New Machine Learning columns added here
+            ML_safety_incident_flag, ML_safety_risk_score, ML_predicted_los_days, ML_predicted_total_cost
+        )
+        SELECT 
+            -- Audit & Lineage
+            CAST(@job_id AS VARCHAR(100)),
+            'Healthcare Silver Transformation',
+            
+            -- Demographics
+            patient_id,
+            REPLACE(TRIM(
+                UPPER(LEFT(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(patient_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')), 1)) + 
+                LOWER(SUBSTRING(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(patient_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')), 2, CHARINDEX(' ', TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(patient_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')) + ' ') - 1)) + ' ' +
+                UPPER(LEFT(SUBSTRING(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(patient_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')), CHARINDEX(' ', TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(patient_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')) + ' ') + 1, 8000), 1)) + 
+                LOWER(SUBSTRING(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(patient_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')), CHARINDEX(' ', TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(patient_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')) + ' ') + 2, 8000))
+            ), '  ', ' ') AS patient_name,
+            TRY_CAST(birth_year AS INT),
+            CASE WHEN TRIM(sex) IN ('Nan', 'null', '') THEN NULL ELSE UPPER(LEFT(TRIM(sex), 1)) + LOWER(SUBSTRING(TRIM(sex), 2, 255)) END,
+            
+            -- State Name Standardization
+            CASE UPPER(TRIM(state))
+                WHEN 'NC' THEN 'North Carolina'
+                WHEN 'MI' THEN 'Michigan'
+                WHEN 'PA' THEN 'Pennsylvania'
+                WHEN 'GA' THEN 'Georgia'
+                WHEN 'TX' THEN 'Texas'
+                WHEN 'IL' THEN 'Illinois'
+                WHEN 'FL' THEN 'Florida'
+                WHEN 'CA' THEN 'California'
+                WHEN 'OH' THEN 'Ohio'
+                WHEN 'NY' THEN 'New York'
+                ELSE UPPER(TRIM(state))
+            END AS state,
+
+            b.encounter_id,
+            icd10_code,
+            REPLACE((SELECT CAST(UPPER(LEFT(v.value, 1)) + LOWER(SUBSTRING(v.value, 2, LEN(v.value))) + ' ' AS VARCHAR(MAX)) FROM STRING_SPLIT(TRIM(diagnosis_display), ' ') v FOR XML PATH('')), 'W/o', 'W/O'),
+          
+            -- Clinical
+            severity_index,
+            comorbidity_count,
+            has_diabetes,
+            has_hypertension,
+            has_chf,
+            TRY_CAST(hba1c_pct AS DECIMAL(10,2)),
+            TRY_CAST(creatinine_mg_dl AS DECIMAL(10,2)),
+            TRY_CAST(medication_adherence_pdc AS DECIMAL(10,2)),
+            hai_flag,
+            follow_up_within_48h_flag,
+
+            -- Vitals 
+            CASE WHEN TRY_CAST(sbp_mmhg AS DECIMAL(10,2)) <= TRY_CAST(dbp_mmhg AS DECIMAL(10,2)) THEN NULL ELSE TRY_CAST(sbp_mmhg AS DECIMAL(10,2)) END,
+            CASE WHEN TRY_CAST(sbp_mmhg AS DECIMAL(10,2)) <= TRY_CAST(dbp_mmhg AS DECIMAL(10,2)) THEN NULL ELSE TRY_CAST(dbp_mmhg AS DECIMAL(10,2)) END,
+            CASE WHEN TRY_CAST(heart_rate_bpm AS DECIMAL(10,2)) < 30 OR TRY_CAST(heart_rate_bpm AS DECIMAL(10,2)) > 250 THEN NULL ELSE TRY_CAST(heart_rate_bpm AS DECIMAL(10,2)) END,
+            CASE WHEN TRY_CAST(spo2_pct AS DECIMAL(10,2)) > 100 THEN 100 ELSE TRY_CAST(spo2_pct AS DECIMAL(10,2)) END,
+            CASE WHEN TRY_CAST(temperature_f AS DECIMAL(10,2)) < 90 OR TRY_CAST(temperature_f AS DECIMAL(10,2)) > 110 THEN NULL ELSE TRY_CAST(temperature_f AS DECIMAL(10,2)) END,
+            TRY_CAST(bmi AS DECIMAL(10,2)),
+            TRY_CAST(respiratory_rate AS DECIMAL(10,2)),
+            TRY_CAST(glucose_mg_dl AS DECIMAL(10,2)),
+            TRY_CAST(wbc_10e3_ul AS DECIMAL(10,2)),
+            TRY_CAST(nt_probnp_pg_ml AS DECIMAL(10,2)),
+
+            -- Operational Metrics
+            TRY_CAST(triage_timestamp AS DATETIME2(0)),
+            TRY_CAST(physician_assessment_timestamp AS DATETIME2(0)),
+            TRY_CAST(admit_timestamp AS DATETIME2(0)),
+            TRY_CAST(bed_request_time AS DATETIME2(0)),
+            TRY_CAST(bed_assign_time AS DATETIME2(0)),
+            TRY_CAST(discharge_timestamp AS DATETIME2(0)),
+            UPPER(TRIM(unit_assigned)),
+            TRY_CAST(bed_occupancy_pct AS DECIMAL(10,2)),
+            ISNULL(TRY_CAST(days_since_last_stay AS DECIMAL(10,2)), 0),
+            DATEDIFF(MINUTE, TRY_CAST(triage_timestamp AS DATETIME2(0)), TRY_CAST(physician_assessment_timestamp AS DATETIME2(0))),
+            DATEDIFF(MINUTE, TRY_CAST(bed_request_time AS DATETIME2(0)), TRY_CAST(bed_assign_time AS DATETIME2(0))),
+            CASE WHEN discharge_timestamp < admit_timestamp THEN 0 ELSE CAST(DATEDIFF(SECOND, admit_timestamp, discharge_timestamp) / 86400.0 AS DECIMAL(10,2)) END,
+
+            -- Quality & Incidents
+            safety_incident_flag,
+     
+            REPLACE((SELECT STUFF((SELECT ' ' + UPPER(LEFT(s.value,1)) + LOWER(SUBSTRING(s.value,2,8000)) FROM STRING_SPLIT(ISNULL(incident_type, 'No Incident'), ' ') s FOR XML PATH('')), 1, 1, '')), 'Near-miss', 'Near-Miss'),
+            
+            REPLACE((SELECT STUFF((SELECT ' ' + UPPER(LEFT(s.value,1)) + LOWER(SUBSTRING(s.value,2,8000)) FROM STRING_SPLIT(ISNULL(incident_severity, 'No Incident'), ' ') s FOR XML PATH('')), 1, 1, '')), 'Near-miss', 'Near-Miss'),
+            
+            ISNULL(pdsa_cycle_id, 'None'),
+            
+            -- Financials
+            claim_denial_flag,
+            ISNULL(denial_reason_code, 'Approved'),
+            claim_id,
+            REPLACE(UPPER(LEFT(TRIM(payer), 1)) + LOWER(SUBSTRING(TRIM(payer), 2, 255)), '-p', '-P'),
+            payer_id,
+            npi_billing,
+            ISNULL(TRY_CAST(drg_weight AS DECIMAL(18,4)), 0),
+            TRY_CAST(submitted_charge_usd AS DECIMAL(10,2)),
+            TRY_CAST(allowed_amount_usd AS DECIMAL(10,2)),
+            TRY_CAST(patient_responsibility_usd AS DECIMAL(10,2)),
+            CASE WHEN payer = 'Self-Pay' THEN TRY_CAST(submitted_charge_usd AS DECIMAL(10,2)) ELSE 0 END,
+            CASE WHEN payer = 'Self-Pay' THEN TRY_CAST(patient_responsibility_usd AS DECIMAL(10,2)) - TRY_CAST(submitted_charge_usd AS DECIMAL(10,2)) ELSE 0 END,
+            CASE WHEN payer <> 'Self-Pay' THEN TRY_CAST(submitted_charge_usd AS DECIMAL(10,2)) - TRY_CAST(allowed_amount_usd AS DECIMAL(10,2)) ELSE 0 END,
+
+            -- Staff & Names
+            nurse_emp_id,
+            REPLACE(TRIM(
+                UPPER(LEFT(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(nurse_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')), 1)) + 
+                LOWER(SUBSTRING(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(nurse_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')), 2, CHARINDEX(' ', TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(nurse_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')) + ' ') - 1)) + ' ' +
+                UPPER(LEFT(SUBSTRING(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(nurse_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')), CHARINDEX(' ', TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(nurse_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')) + ' ') + 1, 8000), 1)) + 
+                LOWER(SUBSTRING(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(nurse_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')), CHARINDEX(' ', TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(nurse_name, 'Ms.', ''), 'Dr. ', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', '')) + ' ') + 2, 8000))
+            ), '  ', ' ') AS nurse_name,
+            UPPER(TRIM(nurse_role)),
+            UPPER(TRIM(nurse_unit)),
+            
+            doc_emp_id,
+           'Dr. ' + REPLACE(TRIM(
+                UPPER(LEFT(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(doctor_name, 'Dr. Dr. ', 'Dr. '), 'MD', ''), 'Ms.', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', ''), 'Dr. ', '')), 1)) + 
+                LOWER(SUBSTRING(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(doctor_name, 'Dr. Dr. ', 'Dr. '), 'MD', ''), 'Ms.', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', ''), 'Dr. ', '')), 2, CHARINDEX(' ', TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(doctor_name, 'Dr. Dr. ', 'Dr. '), 'MD', ''), 'Ms.', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', ''), 'Dr. ', '')) + ' ') - 1)) + ' ' +
+                UPPER(LEFT(SUBSTRING(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(doctor_name, 'Dr. Dr. ', 'Dr. '), 'MD', ''), 'Ms.', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', ''), 'Dr. ', '')), CHARINDEX(' ', TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(doctor_name, 'Dr. Dr. ', 'Dr. '), 'MD', ''), 'Ms.', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', ''), 'Dr. ', '')) + ' ') + 1, 8000), 1)) + 
+                LOWER(SUBSTRING(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(doctor_name, 'Dr. Dr. ', 'Dr. '), 'MD', ''), 'Ms.', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', ''), 'Dr. ', '')), CHARINDEX(' ', TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(doctor_name, 'Dr. Dr. ', 'Dr. '), 'MD', ''), 'Ms.', ''), 'Mr. ', ''), 'Mrs. ', ''), 'Miss. ', ''), 'Dr. ', '')) + ' ') + 2, 8000))
+            ), '  ', ' ') AS doctor_name,
+            
+            REPLACE(UPPER(LEFT(TRIM(doctor_specialty), 1)) + LOWER(SUBSTRING(TRIM(doctor_specialty), 2, 8000)), '  ', ' '),
+            
+            -- Turnover & Burnout
+            TRY_CAST(shift_hours AS DECIMAL(10,2)),
+            TRY_CAST(patients_per_nurse_ratio AS INT),
+            TRY_CAST(overtime_hours AS DECIMAL(10,2)),
+            TRY_CAST(burnout_cynicism_mbi AS DECIMAL(10,2)),
+            TRY_CAST(turnover_risk_index AS DECIMAL(10,2)),
+            
+            -- Calculating Burnout Category Dynamically
+            CASE 
+                WHEN TRY_CAST(burnout_cynicism_mbi AS DECIMAL(10,2)) >= 4.0 THEN CAST('High Risk' AS VARCHAR(50))
+                WHEN TRY_CAST(burnout_cynicism_mbi AS DECIMAL(10,2)) >= 2.0 THEN CAST('Moderate Risk' AS VARCHAR(50))
+                ELSE CAST('Low Risk' AS VARCHAR(50))
+            END, 
+
+            -- CAHPS (Survey Data)
+            TRY_CAST(cahps_nurse_communication AS DECIMAL(10,2)),
+            TRY_CAST(cahps_doctor_communication AS DECIMAL(10,2)),
+            TRY_CAST(cahps_responsiveness AS DECIMAL(10,2)),
+            TRY_CAST(cahps_pain_management AS DECIMAL(10,2)),
+            TRY_CAST(cahps_discharge_info AS DECIMAL(10,2)),
+            TRY_CAST(cahps_care_transition AS DECIMAL(10,2)),
+            TRY_CAST(cahps_cleanliness AS DECIMAL(10,2)),
+            TRY_CAST(cahps_quietness AS DECIMAL(10,2)),
+
+            -- Flags & Emram
+            TRY_CAST(telehealth_used_flag AS BIT),
+            TRY_CAST(patient_reported_wait_time_mins AS INT),
+            TRY_CAST(hedis_hba1c_tested AS BIT),
+            TRY_CAST(hedis_hba1c_poor_control AS BIT),
+            TRY_CAST(himss_emram_stage AS INT),
+
+            -- ==========================================
+            --  Business Logic
+            -- ==========================================
+            
+            -- 1. Age Demographics
+            (YEAR(TRY_CAST(admit_timestamp AS DATETIME2(0))) - TRY_CAST(birth_year AS INT)) AS patient_age_at_admit,
+            CASE 
+                WHEN (YEAR(TRY_CAST(admit_timestamp AS DATETIME2(0))) - TRY_CAST(birth_year AS INT)) < 13 THEN 'Children'
+                WHEN (YEAR(TRY_CAST(admit_timestamp AS DATETIME2(0))) - TRY_CAST(birth_year AS INT)) BETWEEN 13 AND 19 THEN 'Teenager'
+                WHEN (YEAR(TRY_CAST(admit_timestamp AS DATETIME2(0))) - TRY_CAST(birth_year AS INT)) BETWEEN 20 AND 64 THEN 'Adult'
+                ELSE 'Old'
+            END AS age_group,
+
+            -- 2. SLA Tracking (Breach if Triage to Assessment > 60 mins)
+            CASE WHEN DATEDIFF(MINUTE, TRY_CAST(triage_timestamp AS DATETIME2(0)), TRY_CAST(physician_assessment_timestamp AS DATETIME2(0))) > 60 THEN 1 ELSE 0 END AS sla_breached_flag,
+
+            -- 3. Readmissions & History
+            CASE WHEN ISNULL(TRY_CAST(days_since_last_stay AS DECIMAL(10,2)), 0) > 0 THEN 1 ELSE 0 END AS prev_discharge_flag,
+            CASE WHEN ISNULL(TRY_CAST(days_since_last_stay AS DECIMAL(10,2)), 0) > 0 AND TRY_CAST(days_since_last_stay AS DECIMAL(10,2)) <= 30 THEN 1 ELSE 0 END AS is_readmit_30d,
+
+            -- 4. Clinical Alerts (Hypertensive Crisis)
+            CASE WHEN TRY_CAST(sbp_mmhg AS DECIMAL(10,2)) > 180 OR TRY_CAST(dbp_mmhg AS DECIMAL(10,2)) > 120 THEN 1 ELSE 0 END AS hypertensive_crisis_flag,
+
+            -- 5. Financial Margins (Write-off Percentage)
+            CASE 
+                WHEN TRY_CAST(b.submitted_charge_usd AS DECIMAL(10,2)) > 0 
+                THEN ((TRY_CAST(b.submitted_charge_usd AS DECIMAL(10,2)) - TRY_CAST(b.allowed_amount_usd AS DECIMAL(10,2))) / TRY_CAST(b.submitted_charge_usd AS DECIMAL(10,2))) * 100 
+                ELSE 0 
+            END AS write_off_pct,
+
+            -- ==========================================
+            -- 🟢 6. Sequence Quality Check (FIXED)
+            -- I removed 'TRY_CAST(... AS DATETIME2)' to prevent "Operand type clash" 
+            -- errors with decimal columns. This now exactly matches your working 
+            -- WHERE clause logic from earlier.
+            -- ==========================================
+            CASE 
+                WHEN triage_timestamp > physician_assessment_timestamp THEN 'Error: Triage after Assessment'
+                WHEN physician_assessment_timestamp > bed_request_time THEN 'Error: Assessment after Bed Request'
+                WHEN bed_request_time > bed_assign_time THEN 'Error: Bed Request after Bed Assign'
+                WHEN bed_assign_time < admit_timestamp THEN 'Error: Bed Assign before Admission'
+                WHEN admit_timestamp > discharge_timestamp THEN 'Error: Admission after Discharge'
+                ELSE 'Valid Sequence'
+            END AS sequence_status,
+            
+            --  ML Data brought in via LEFT JOIN
+            ml.ML_safety_incident_flag,
+            ml.ML_safety_risk_score,
+            ml.ML_predicted_los_days,
+            ml.ML_predicted_total_cost
+
+        -- The MERGE (LEFT JOIN) connecting the two tables based on encounter_id
+        FROM bronze.Healthcare_Dataset b
+        LEFT JOIN bronze.ML_Predictions ml ON b.encounter_id = ml.encounter_id;
+        
+        SET @rows_affected = @@ROWCOUNT;
+
+        -- 3. End Task
+        EXEC ops.sp_end_task 
+            @job_run_id = @job_id,
+            @task_name = 'Transform & Clean Bronze to Silver',
+            @status = 'Success',
+            @rows_inserted = @rows_affected;
+
+        -- 4. End Job
+        EXEC ops.sp_end_job 
+            @job_run_id = @job_id,
+            @status = 'Success';
+
+    END TRY
+    BEGIN CATCH
+        DECLARE @error NVARCHAR(MAX) = ERROR_MESSAGE();
+
+        EXEC ops.sp_end_task 
+            @job_run_id = @job_id,
+            @task_name = 'Transform & Clean Bronze to Silver',
+            @status = 'Failed',
+            @message = @error;
+
+        EXEC ops.sp_end_job 
+            @job_run_id = @job_id,
+            @status = 'Failed',
+            @message = @error;
+            
+        -- Re-throw the error so the developer can see it in SSMS/Execution logs
+        THROW;
+    END CATCH
+END;
+GO
+
+EXEC ops.sp_run_healthcare_silver_load;
+
+-- VERIFICATION CHECK: Silver (Checking if the merge was successful)
+PRINT '--- Silver Merge Verification ---';
+SELECT COUNT(ML_predicted_los_days) AS Successfully_Merged_ML_Rows 
+FROM silver.Healthcare_Dataset 
+WHERE ML_predicted_los_days IS NOT NULL;
+GO
