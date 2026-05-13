@@ -1,0 +1,126 @@
+/* =========================================================
+    AUTOMATED PIPELINE PROCEDURE (STAGING LOAD)
+   Purpose: Clears old staging data, bulk inserts the new CSV, 
+            and logs the execution status (Success/Fail).
+========================================================= */
+use HealthcareDataWarehouse;
+go
+
+CREATE OR ALTER PROCEDURE ops.sp_run_healthcare_staging_load
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Variables to hold the unique job ID and row count
+    DECLARE @job_id UNIQUEIDENTIFIER;
+    DECLARE @rows INT;
+
+    BEGIN TRY
+        --------------------------------------------------
+        -- 1. INITIALIZE LOGGING (START JOB & TASK)
+        --------------------------------------------------
+        -- Start the overall Job
+        EXEC ops.sp_start_job 
+            @pipeline_name = 'Healthcare Staging Load',
+            @job_run_id = @job_id OUTPUT;
+
+        -- Start the specific Task
+        EXEC ops.sp_start_task 
+            @job_run_id = @job_id,
+            @task_name = 'Load Staging Healthcare_Dataset';
+
+        --------------------------------------------------
+        -- 2. CORE ACTION: TRUNCATE AND LOAD RAW DATA
+        --------------------------------------------------
+        
+        -- A. Wipe out yesterday's data completely
+        TRUNCATE TABLE staging.Healthcare_Dataset;
+        
+        -- B. Pull today's data directly from the CSV file
+        BULK INSERT staging.Healthcare_Dataset
+        FROM 'D:\Final Graduation Project Healthcare\Dataset\New_Generated_Dataset.csv'
+        WITH (
+            FIRSTROW = 2,           -- Skip the header row
+            FIELDTERMINATOR = ',',  -- Columns are separated by comma
+             FORMAT = 'CSV',           
+             FIELDQUOTE = '"',   
+            TABLOCK                 -- Lock the table for faster bulk loading
+        );
+        
+        --------------------------------------------------
+        -- 3. FINALIZE LOGGING (SUCCESS)
+        --------------------------------------------------
+        -- Count how many rows were successfully inserted
+        SELECT @rows = COUNT(*) FROM staging.Healthcare_Dataset;
+
+        -- Mark the Task as Success
+        EXEC ops.sp_end_task 
+            @job_run_id = @job_id,
+            @task_name = 'Load Staging Healthcare_Dataset',
+            @status = 'Success',
+            @rows_inserted = @rows;
+
+        -- Mark the overall Job as Success
+        EXEC ops.sp_end_job 
+            @job_run_id = @job_id,
+            @status = 'Success';
+
+    END TRY
+    BEGIN CATCH
+        --------------------------------------------------
+        -- 4. ERROR HANDLING (FAILURE)
+        --------------------------------------------------
+        -- If anything fails (e.g., file not found, bad format), grab the error
+        DECLARE @error NVARCHAR(MAX) = ERROR_MESSAGE();
+
+        -- Mark the Task as Failed and save the error message
+        EXEC ops.sp_end_task 
+            @job_run_id = @job_id,
+            @task_name = 'Load Staging Healthcare_Dataset',
+            @status = 'Failed',
+            @message = @error;
+
+        -- Mark the Job as Failed
+        EXEC ops.sp_end_job 
+            @job_run_id = @job_id,
+            @status = 'Failed',
+            @message = @error;
+THROW;
+    END CATCH
+END;
+GO
+
+/* =========================================================
+   6. RUN PIPELINE
+   Execute this single line every day to load the new file
+========================================================= */
+EXEC ops.sp_run_healthcare_staging_load;
+GO
+
+/* =========================================================
+   7. CHECK LOGS
+   Verify if the run was successful and how many rows inserted
+========================================================= */
+SELECT * FROM ops.job_runs ORDER BY started_at DESC;
+SELECT * FROM ops.task_runs ORDER BY started_at DESC;
+
+
+-- Execute Bulk Insert
+BULK INSERT staging.ML_Predictions
+FROM 'D:\Final Graduation Project Healthcare\ML\ML_Results_Handover_Final.csv'
+WITH (
+    FORMAT = 'CSV',
+    FIRSTROW = 2, -- Skips the header row
+    FIELDTERMINATOR = ',',
+    ROWTERMINATOR = '\n', -- Or '\r\n' depending on your OS
+    TABLOCK
+);
+GO
+
+-- VERIFICATION CHECK: Staging
+PRINT '--- Staging Verification ---';
+SELECT COUNT(*) AS Staging_Total_Rows FROM staging.ML_Predictions;
+SELECT TOP 5 * FROM staging.ML_Predictions;
+GO
+
+
