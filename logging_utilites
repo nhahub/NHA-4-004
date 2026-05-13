@@ -1,0 +1,135 @@
+use HealthcareDataWarehouse;
+go
+/* =========================================================
+1. DATABASE CONFIGURATION (BIG DATA FIX)
+   This prevents the "Transaction Log Full" error.
+========================================================= */
+ALTER DATABASE HealthcareDataWarehouse SET RECOVERY SIMPLE;
+GO
+DBCC SHRINKDATABASE (HealthcareDataWarehouse);
+GO
+
+/* =========================================================
+   2. CREATE SCHEMA
+========================================================= */
+
+
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'ops')
+BEGIN
+    EXEC('CREATE SCHEMA ops');
+END;
+GO
+
+/* =========================================================
+   3. CREATE LOGGING TABLES
+========================================================= */
+
+IF OBJECT_ID(N'ops.job_runs', N'U') IS NULL
+BEGIN
+    CREATE TABLE ops.job_runs (
+        job_run_id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        pipeline_name NVARCHAR(128) NOT NULL,
+        status VARCHAR(20) NOT NULL CHECK (status IN ('Running','Success','Failed')),
+        started_at DATETIME2 DEFAULT SYSUTCDATETIME(),
+        ended_at DATETIME2 NULL,
+        duration_sec DECIMAL(18,4) NULL,
+        message NVARCHAR(MAX) NULL
+    );
+END;
+GO
+
+IF OBJECT_ID(N'ops.task_runs', N'U') IS NULL
+BEGIN
+    CREATE TABLE ops.task_runs (
+        task_run_id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        job_run_id UNIQUEIDENTIFIER NOT NULL,
+        task_name NVARCHAR(128),
+        status VARCHAR(20) CHECK (status IN ('Running','Success','Failed')),
+        started_at DATETIME2 DEFAULT SYSUTCDATETIME(),
+        ended_at DATETIME2 NULL,
+        duration_sec DECIMAL(18,4) NULL,
+        rows_inserted INT NULL,
+        rows_updated INT NULL,
+        rows_rejected INT NULL,
+        message NVARCHAR(MAX),
+        FOREIGN KEY (job_run_id) REFERENCES ops.job_runs(job_run_id)
+    );
+END;
+GO
+
+/* =========================================================
+   4. STORED PROCEDURES
+========================================================= */
+
+-- Start Job
+CREATE OR ALTER PROCEDURE ops.sp_start_job
+    @pipeline_name NVARCHAR(128),
+    @job_run_id UNIQUEIDENTIFIER OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @job_run_id = NEWID();
+
+    INSERT INTO ops.job_runs (job_run_id, pipeline_name, status)
+    VALUES (@job_run_id, @pipeline_name, 'Running');
+END;
+GO
+
+-- End Job
+CREATE OR ALTER PROCEDURE ops.sp_end_job
+    @job_run_id UNIQUEIDENTIFIER,
+    @status VARCHAR(20),
+    @message NVARCHAR(MAX) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE ops.job_runs
+    SET status = @status,
+        ended_at = SYSUTCDATETIME(),
+        duration_sec = DATEDIFF(SECOND, started_at, SYSUTCDATETIME()),
+        message = @message
+    WHERE job_run_id = @job_run_id;
+END;
+GO
+
+-- Start Task
+CREATE OR ALTER PROCEDURE ops.sp_start_task
+    @job_run_id UNIQUEIDENTIFIER,
+    @task_name NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO ops.task_runs (job_run_id, task_name, status)
+    VALUES (@job_run_id, @task_name, 'Running');
+END;
+GO
+
+-- End Task
+CREATE OR ALTER PROCEDURE ops.sp_end_task
+    @job_run_id UNIQUEIDENTIFIER,
+    @task_name NVARCHAR(128),
+    @status VARCHAR(20),
+    @rows_inserted INT = NULL,
+    @rows_updated INT = NULL,
+    @rows_rejected INT = NULL,
+    @message NVARCHAR(MAX) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE ops.task_runs
+    SET status = @status,
+        ended_at = SYSUTCDATETIME(),
+        duration_sec = DATEDIFF(SECOND, started_at, SYSUTCDATETIME()),
+        rows_inserted = @rows_inserted,
+        rows_updated = @rows_updated,
+        rows_rejected = @rows_rejected,
+        message = @message
+    WHERE job_run_id = @job_run_id
+      AND task_name = @task_name
+      AND status = 'Running';
+END;
+GO
+
