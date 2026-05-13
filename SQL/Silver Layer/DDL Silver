@@ -1,0 +1,147 @@
+USE HealthcareDataWarehouse;
+GO
+IF OBJECT_ID('silver.Healthcare_Dataset', 'U') IS NOT NULL 
+    DROP TABLE silver.Healthcare_Dataset;
+
+-- Create the correct physical table for the Silver Layer
+CREATE TABLE silver.Healthcare_Dataset (
+    -- ==========================================
+    -- 1. Surrogate Key & Audit Metadata 
+    -- ==========================================
+    silver_id INT IDENTITY(1,1) PRIMARY KEY,
+    ingested_at DATETIME DEFAULT GETDATE(),
+    batch_id VARCHAR(100),
+    pipeline_name VARCHAR(255),
+    sequence_status VARCHAR(100),
+
+    -- ==========================================
+    -- 2. Business Data Columns (Raw & Cleaned)
+    -- ==========================================
+    
+    -- Demographics
+    patient_id VARCHAR(255),
+    patient_name VARCHAR(500),
+    birth_year INT,
+    sex VARCHAR(50),
+    state VARCHAR(50),
+    encounter_id VARCHAR(255),
+    icd10_code VARCHAR(50),
+    diagnosis_display VARCHAR(MAX),
+    
+    -- Clinical 
+    severity_index DECIMAL(10,3),
+    comorbidity_count INT,
+    has_diabetes BIT,
+    has_hypertension BIT,
+    has_chf BIT,
+    hba1c_pct DECIMAL(10,2),
+    creatinine_mg_dl DECIMAL(10,2),
+    medication_adherence_pdc DECIMAL(10,2),
+    hai_flag BIT,
+    follow_up_within_48h_flag BIT,
+    
+    -- Vitals
+    sbp_mmhg DECIMAL(10,2),
+    dbp_mmhg DECIMAL(10,2),
+    heart_rate_bpm DECIMAL(10,2),
+    spo2_pct DECIMAL(10,2),
+    temperature_f DECIMAL(10,2),
+    bmi DECIMAL(10,2),
+    respiratory_rate DECIMAL(10,2),
+    glucose_mg_dl DECIMAL(10,2),
+    wbc_10e3_ul DECIMAL(10,2),
+    nt_probnp_pg_ml DECIMAL(10,2),
+    
+    -- Operational Metrics
+    triage_timestamp DATETIME2(0),
+    physician_assessment_timestamp DATETIME2(0),
+    admit_timestamp DATETIME2(0),
+    bed_request_time DATETIME2(0),
+    bed_assign_time DATETIME2(0),
+    discharge_timestamp DATETIME2(0),
+    unit_assigned VARCHAR(255),
+    bed_occupancy_pct DECIMAL(10,2),
+    days_since_last_stay DECIMAL(10,2),
+    wait_time_mins INT,
+    bed_lag_mins INT,
+    true_los_days DECIMAL(10,2),
+    
+    -- Incidents & Quality
+    safety_incident_flag BIT,
+    incident_type VARCHAR(500),
+    incident_severity VARCHAR(500),
+    pdsa_cycle_id VARCHAR(100),
+    
+    -- Financials
+    claim_denial_flag BIT,
+    denial_reason_code VARCHAR(255),
+    claim_id VARCHAR(100),
+    payer VARCHAR(255),
+    payer_id VARCHAR(100),
+    npi_billing VARCHAR(50),
+    drg_weight DECIMAL(18,4),
+    submitted_charge_usd DECIMAL(10,2),
+    allowed_amount_usd DECIMAL(10,2),
+    patient_responsibility_usd DECIMAL(10,2),
+    true_patient_resp DECIMAL(10,2),
+    billing_error_amount DECIMAL(10,2),
+    contractual_adjustment DECIMAL(10,2),
+    
+    -- Doctors & Nurses
+    nurse_emp_id VARCHAR(100),
+    nurse_name VARCHAR(500),
+    nurse_role VARCHAR(255),
+    nurse_unit VARCHAR(255),
+    doc_emp_id VARCHAR(100),
+    doctor_name VARCHAR(500),
+    doctor_specialty VARCHAR(500),
+    
+    -- Turnover & Burnout 
+    shift_hours DECIMAL(10,2),
+    patients_per_nurse_ratio INT,
+    overtime_hours DECIMAL(10,2),
+    burnout_cynicism_mbi DECIMAL(10,2),
+    turnover_risk_index DECIMAL(10,2),
+    staff_burnout_category VARCHAR(50),
+    
+    -- CAHPS (Patient Satisfaction)
+    cahps_nurse_communication DECIMAL(10,2),
+    cahps_doctor_communication DECIMAL(10,2),
+    cahps_responsiveness DECIMAL(10,2),
+    cahps_pain_management DECIMAL(10,2),
+    cahps_discharge_info DECIMAL(10,2),
+    cahps_care_transition DECIMAL(10,2),
+    cahps_cleanliness DECIMAL(10,2),
+    cahps_quietness DECIMAL(10,2),
+    
+    -- Flags & Emram
+    telehealth_used_flag BIT,
+    patient_reported_wait_time_mins INT,
+    hedis_hba1c_tested BIT,
+    hedis_hba1c_poor_control BIT,
+    himss_emram_stage INT,
+
+    -- ==========================================
+    -- 3. Physically Stored Business Logic
+    -- ==========================================
+    patient_age_at_admit INT,
+    age_group VARCHAR(50),
+    sla_breached_flag BIT,
+    prev_discharge_flag BIT,
+    is_readmit_30d BIT,
+    hypertensive_crisis_flag BIT,
+    write_off_pct DECIMAL(10,2)
+);
+GO
+
+/* ==============================================================================
+   3. SILVER LAYER: ADDING COLUMNS FOR ML DATA
+============================================================================== */
+
+-- Add the new ML columns to the existing physical Silver table
+ALTER TABLE silver.Healthcare_Dataset ADD 
+    ML_safety_incident_flag INT,
+    ML_safety_risk_score DECIMAL(10,2),
+    ML_predicted_los_days DECIMAL(10,2),
+    ML_predicted_total_cost DECIMAL(10,2);
+GO
