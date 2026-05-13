@@ -1,0 +1,283 @@
+USE HealthcareDataWarehouse;
+GO
+
+/* ==============================================================================
+   GOLDEN LAYER DATA MODELS (VIEWS)
+   
+   Description: 
+   This script creates the Star Schema views for the Business Intelligence layer.
+   - 6 Dimensions for filtering (Patient, Doctor, Nurse, Payer, Diagnosis, Date).
+   - 1 Fact View containing all clinical, financial, and operational metrics.
+============================================================================== */
+
+-- Ensure the Gold schema exists
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'gold')
+BEGIN
+    EXEC('CREATE SCHEMA gold');
+END;
+GO
+
+/* ------------------------------------------------------------------------------
+   1. DIMENSION VIEWS
+------------------------------------------------------------------------------ */
+
+-- Dim_Patient
+CREATE OR ALTER VIEW gold.vw_Dim_Patient AS
+SELECT DISTINCT 
+    patient_id, 
+    patient_name, 
+    birth_year, 
+    sex, 
+    state
+FROM silver.Healthcare_Dataset
+WHERE patient_id IS NOT NULL;
+GO
+
+-- Dim_Diagnosis
+CREATE OR ALTER VIEW gold.vw_Dim_Diagnosis AS
+SELECT DISTINCT 
+    icd10_code AS diagnosis_code, 
+    diagnosis_display
+FROM silver.Healthcare_Dataset
+WHERE icd10_code IS NOT NULL;
+GO
+
+-- Dim_Nurse
+CREATE OR ALTER VIEW gold.vw_Dim_Nurse AS
+SELECT DISTINCT 
+    nurse_emp_id AS nurse_id, 
+    nurse_name, 
+    nurse_role, 
+    nurse_unit
+FROM silver.Healthcare_Dataset
+WHERE nurse_emp_id IS NOT NULL;
+GO
+
+-- Dim_Doctor
+CREATE OR ALTER VIEW gold.vw_Dim_Doctor AS
+SELECT DISTINCT 
+    doc_emp_id AS doctor_id, 
+    doctor_name, 
+    doctor_specialty
+FROM silver.Healthcare_Dataset
+WHERE doc_emp_id IS NOT NULL;
+GO
+
+-- Dim_Payer
+CREATE OR ALTER VIEW gold.vw_Dim_Payer AS
+SELECT DISTINCT 
+    payer_id, 
+    payer
+FROM silver.Healthcare_Dataset
+WHERE payer_id IS NOT NULL;
+GO
+
+-- Dim_Date (Calendar Table)
+CREATE OR ALTER VIEW gold.vw_Dim_Date AS
+WITH NumberTally AS (
+    SELECT TOP 2000 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS N
+    FROM sys.messages
+),
+DateGenerator AS (
+    SELECT DATEADD(DAY, N, '2024-01-01') AS FullDate
+    FROM NumberTally
+    WHERE DATEADD(DAY, N, '2024-01-01') <= '2026-12-31'
+)
+SELECT 
+    CAST(FORMAT(FullDate, 'yyyyMMdd') AS INT) AS DateKey,
+    FullDate,
+    YEAR(FullDate) AS Year,
+    MONTH(FullDate) AS Month,
+    DATENAME(MONTH, FullDate) AS MonthName,
+    DAY(FullDate) AS Day,
+    DATENAME(WEEKDAY, FullDate) AS DayName,
+    DATEPART(QUARTER, FullDate) AS Quarter,
+    CASE WHEN DATENAME(WEEKDAY, FullDate) IN ('Saturday', 'Friday') THEN 1 ELSE 0 END AS IsWeekend
+FROM DateGenerator;
+GO
+
+
+/* ------------------------------------------------------------------------------
+   2. ENRICHED FACT VIEW
+------------------------------------------------------------------------------ */
+
+CREATE OR ALTER VIEW gold.vw_Fact_Admissions AS
+SELECT 
+    -- Lineage & Audit
+    silver_id,
+    ingested_at,
+    batch_id,
+    pipeline_name,
+
+    -- Primary & Foreign Keys
+    encounter_id, 
+    patient_id, 
+    doc_emp_id AS doctor_id, 
+    nurse_emp_id AS nurse_id, 
+    icd10_code AS diagnosis_code, 
+    payer_id,
+    CAST(FORMAT(admit_timestamp, 'yyyyMMdd') AS INT) AS AdmitDateKey,
+    
+    -- Timestamps
+    triage_timestamp, 
+    physician_assessment_timestamp, 
+    admit_timestamp, 
+    bed_request_time, 
+    bed_assign_time, 
+    discharge_timestamp, 
+    
+    -- ==========================================
+    --  Time Sequence Quality Flag
+    -- This brings the time sequence check we built in the Silver Layer into the Gold Layer.
+    -- You can use this in your dashboards to filter out illogical time sequences or monitor data entry quality.
+    -- ==========================================
+    sequence_status,
+    
+    -- Clinical Metrics
+    severity_index, 
+    CASE
+        WHEN severity_index < 0.3 THEN 'Low'
+        WHEN severity_index < 0.5 THEN 'Moderate'
+        ELSE 'High'
+    END AS severity_band, -- Virtual Band
+
+    comorbidity_count, 
+    CASE
+        WHEN comorbidity_count = 0 THEN 'None'
+        WHEN comorbidity_count <= 2 THEN 'Low'
+        ELSE 'Complex'
+    END AS comorbidity_tier, -- Virtual Band
+
+    has_diabetes, 
+    has_hypertension, 
+    has_chf, 
+    hba1c_pct, 
+    creatinine_mg_dl, 
+    medication_adherence_pdc, 
+    hai_flag, 
+    follow_up_within_48h_flag,
+    sbp_mmhg, 
+    dbp_mmhg, 
+    heart_rate_bpm, 
+    spo2_pct, 
+    temperature_f, 
+    bmi, 
+    respiratory_rate, 
+    glucose_mg_dl, 
+    wbc_10e3_ul, 
+    nt_probnp_pg_ml,
+    hypertensive_crisis_flag, -- Physical from Silver
+    
+    -- Operational Metrics
+    unit_assigned, 
+    bed_occupancy_pct, 
+    days_since_last_stay, 
+    wait_time_mins AS actual_wait_time, 
+    bed_lag_mins, 
+    true_los_days,
+    CASE 
+        WHEN true_los_days <= 1 THEN 'Same-day' 
+        WHEN true_los_days <= 3 THEN 'Short' 
+        WHEN true_los_days <= 7 THEN 'Medium' 
+        ELSE 'Extended' 
+    END AS los_category, -- Virtual Band
+    
+    -- Safety & SLA
+    safety_incident_flag, 
+    incident_type, 
+    incident_severity, 
+    pdsa_cycle_id,
+    sla_breached_flag, -- Physical from Silver
+    
+    -- Financial Metrics
+    claim_denial_flag, 
+    denial_reason_code, 
+    claim_id, 
+    npi_billing, 
+    drg_weight, 
+    submitted_charge_usd, 
+    allowed_amount_usd, 
+    patient_responsibility_usd, 
+    true_patient_resp, 
+    billing_error_amount, 
+    contractual_adjustment,
+    write_off_pct, -- Physical from Silver
+    
+    -- HR & Staffing
+    shift_hours, 
+    patients_per_nurse_ratio, 
+    CASE WHEN patients_per_nurse_ratio > 6 THEN 1 ELSE 0 END AS is_overloaded, -- Virtual Flag
+    overtime_hours, 
+    burnout_cynicism_mbi, 
+    turnover_risk_index, 
+    staff_burnout_category,
+    
+    -- Patient Context (Physical from Silver)
+    patient_age_at_admit,
+    age_group, 
+    prev_discharge_flag,
+    is_readmit_30d,
+    
+    -- Satisfaction (CAHPS)
+    cahps_nurse_communication AS nurse_communication, 
+    cahps_doctor_communication AS doctor_communication, 
+    cahps_responsiveness AS responsiveness, 
+    cahps_pain_management AS pain_management, 
+    cahps_discharge_info AS discharge_info, 
+    cahps_care_transition AS care_transition, 
+    cahps_cleanliness AS cleanliness, 
+    cahps_quietness AS quietness, 
+    CASE 
+        WHEN (cahps_nurse_communication + cahps_doctor_communication + cahps_responsiveness + 
+              cahps_pain_management + cahps_discharge_info + cahps_care_transition + 
+              cahps_cleanliness + cahps_quietness) / 8.0 >= 4 THEN 'High'
+        WHEN (cahps_nurse_communication + cahps_doctor_communication + cahps_responsiveness + 
+              cahps_pain_management + cahps_discharge_info + cahps_care_transition + 
+              cahps_cleanliness + cahps_quietness) / 8.0 >= 3 THEN 'Medium'
+        ELSE 'Low'
+    END AS satisfaction_band, -- Virtual Band
+
+    patient_reported_wait_time_mins AS reported_wait_time,
+    CASE
+        WHEN patient_reported_wait_time_mins < 15 THEN 'Minimal'
+        WHEN patient_reported_wait_time_mins < 60 THEN 'Acceptable'
+        ELSE 'Long'
+    END AS wait_category, -- Virtual Band
+    
+    -- System Flags
+    telehealth_used_flag, 
+    hedis_hba1c_tested, 
+    hedis_hba1c_poor_control, 
+    himss_emram_stage,
+    
+    -- ML Columns
+    ML_safety_incident_flag,
+    ML_safety_risk_score,
+    ML_predicted_los_days,
+    ML_predicted_total_cost,
+    
+    -- 1. Convert the hazard flag into a readable format for filtering
+    CASE 
+        WHEN ML_safety_incident_flag = 1 THEN 'Predicted Incident'
+        ELSE 'Safe'
+    END AS ML_Incident_Alert,
+
+    -- 2. Risk classification based on the score (thresholds can be adjusted based on data distribution)
+    CASE 
+        WHEN ML_safety_risk_score >= 4.5 THEN 'Critical Risk'
+        WHEN ML_safety_risk_score >= 3.0 THEN 'Moderate Risk'
+        ELSE 'Low Risk'
+    END AS ML_Risk_Band,
+
+    -- 3. Powerful comparison: The variance between actual Length of Stay (LOS) and the ML predicted LOS
+    (true_los_days - ML_predicted_los_days) AS LOS_Prediction_Variance,
+
+    -- 4. Efficiency evaluation: Did the patient stay longer or shorter than predicted?
+    CASE
+        WHEN true_los_days > ML_predicted_los_days THEN 'Over Predicted LOS'
+        WHEN true_los_days < ML_predicted_los_days THEN 'Under Predicted LOS'
+        ELSE 'Exact Match'
+    END AS LOS_Efficiency_Status
+
+FROM silver.Healthcare_Dataset;
+GO
