@@ -1,0 +1,125 @@
+USE HealthcareDataWarehouse;
+GO
+--  Create the correct table with all Audit Columns included
+CREATE TABLE bronze.Healthcare_Dataset (
+    -- --------------------------------------------------------
+    -- Audit & Lineage Columns (This is what was missing!)
+    -- --------------------------------------------------------
+    bronze_id INT IDENTITY(1,1) NOT NULL,    
+    ingested_at DATETIME NOT NULL,           
+    source_file VARCHAR(500) NULL,           
+    batch_id VARCHAR(100) NOT NULL,          
+    pipeline_name VARCHAR(100) NULL,         
+    source_row_hash VARCHAR(64) NULL,        
+
+    -- --------------------------------------------------------
+    -- Raw Data Columns
+    -- --------------------------------------------------------
+    patient_id VARCHAR(255) NULL,
+    birth_year VARCHAR(255) NULL,
+    sex VARCHAR(255) NULL,
+    state VARCHAR(255) NULL,
+    encounter_id VARCHAR(255) NOT NULL,
+    icd10_code VARCHAR(255) NULL,
+    diagnosis_display VARCHAR(255) NULL,
+    severity_index VARCHAR(255) NULL,
+    comorbidity_count VARCHAR(255) NULL,
+    has_diabetes VARCHAR(255) NULL,
+    has_hypertension VARCHAR(255) NULL,
+    has_chf VARCHAR(255) NULL,
+    sbp_mmhg VARCHAR(255) NULL,
+    dbp_mmhg VARCHAR(255) NULL,
+    heart_rate_bpm VARCHAR(255) NULL,
+    spo2_pct VARCHAR(255) NULL,
+    temperature_f VARCHAR(255) NULL,
+    bmi VARCHAR(255) NULL,
+    respiratory_rate VARCHAR(255) NULL,
+    hba1c_pct VARCHAR(255) NULL,
+    glucose_mg_dl VARCHAR(255) NULL,
+    creatinine_mg_dl VARCHAR(255) NULL,
+    wbc_10e3_ul VARCHAR(255) NULL,
+    nt_probnp_pg_ml VARCHAR(255) NULL,
+    medication_adherence_pdc VARCHAR(255) NULL,
+    hai_flag VARCHAR(255) NULL,
+    follow_up_within_48h_flag VARCHAR(255) NULL,
+    triage_timestamp VARCHAR(255) NULL,
+    physician_assessment_timestamp VARCHAR(255) NULL,
+    admit_timestamp VARCHAR(255) NULL,
+    bed_request_time VARCHAR(255) NULL,
+    bed_assign_time VARCHAR(255) NULL,
+    unit_assigned VARCHAR(255) NULL,
+    bed_occupancy_pct VARCHAR(255) NULL,
+    los_days VARCHAR(255) NULL,
+    discharge_timestamp VARCHAR(255) NULL,
+    safety_incident_flag VARCHAR(255) NULL,
+    incident_type VARCHAR(255) NULL,
+    incident_severity VARCHAR(255) NULL,
+    claim_id VARCHAR(255) NULL,
+    payer VARCHAR(255) NULL,
+    npi_billing VARCHAR(255) NULL,
+    drg_weight VARCHAR(255) NULL,
+    submitted_charge_usd VARCHAR(255) NULL,
+    allowed_amount_usd VARCHAR(255) NULL,
+    patient_responsibility_usd VARCHAR(255) NULL,
+    fraud_upcoding_flag VARCHAR(255) NULL,
+    fraud_duplicate_flag VARCHAR(255) NULL,
+    fraud_unbundling_flag VARCHAR(255) NULL,
+    claim_denial_flag VARCHAR(255) NULL,
+    denial_reason_code VARCHAR(255) NULL,
+    nurse_emp_id VARCHAR(255) NULL,
+    nurse_role VARCHAR(255) NULL,
+    nurse_unit VARCHAR(255) NULL,
+    doc_emp_id VARCHAR(255) NULL,
+    doctor_specialty VARCHAR(255) NULL,
+    shift_hours VARCHAR(255) NULL,
+    patients_per_nurse_ratio VARCHAR(255) NULL,
+    overtime_hours VARCHAR(255) NULL,
+    burnout_exhaustion_mbi VARCHAR(255) NULL,
+    burnout_cynicism_mbi VARCHAR(255) NULL,
+    turnover_risk_index VARCHAR(255) NULL,
+    cahps_nurse_communication VARCHAR(255) NULL,
+    cahps_doctor_communication VARCHAR(255) NULL,
+    cahps_responsiveness VARCHAR(255) NULL,
+    cahps_pain_management VARCHAR(255) NULL,
+    cahps_discharge_info VARCHAR(255) NULL,
+    cahps_care_transition VARCHAR(255) NULL,
+    cahps_cleanliness VARCHAR(255) NULL,
+    cahps_quietness VARCHAR(255) NULL,
+    telehealth_used_flag VARCHAR(255) NULL,
+    appointment_request_date VARCHAR(255) NULL,
+    patient_reported_wait_time_mins VARCHAR(255) NULL,
+    hedis_hba1c_tested VARCHAR(255) NULL,
+    hedis_hba1c_poor_control VARCHAR(255) NULL,
+    pdsa_cycle_id VARCHAR(255) NULL,
+    himss_emram_stage VARCHAR(255) NULL,
+    doctor_name VARCHAR(255) NULL,
+    patient_name VARCHAR(255) NULL,
+    nurse_name VARCHAR(255) NULL,
+    payer_id VARCHAR(255) NULL,
+    prev_discharge VARCHAR(255) NULL,
+    days_since_last_stay VARCHAR(255) NULL,
+    is_readmit_30d VARCHAR(255) NULL,
+
+    CONSTRAINT PK_bronze_Healthcare PRIMARY KEY (bronze_id)
+);
+GO
+
+/* ==============================================================================
+   2. BRONZE LAYER: ML PREDICTIONS
+============================================================================== */
+
+-- Drop table if it exists
+IF OBJECT_ID('bronze.ML_Predictions', 'U') IS NOT NULL 
+    DROP TABLE bronze.ML_Predictions;
+
+-- Create Bronze Table (With proper data types and audit columns)
+CREATE TABLE bronze.ML_Predictions (
+    bronze_id INT IDENTITY(1,1) PRIMARY KEY,
+    ingested_at DATETIME DEFAULT GETDATE(),
+    encounter_id VARCHAR(255),
+    ML_safety_incident_flag INT,
+    ML_safety_risk_score DECIMAL(10,2),
+    ML_predicted_los_days DECIMAL(10,2),
+    ML_predicted_total_cost DECIMAL(10,2)
+);
+GO
