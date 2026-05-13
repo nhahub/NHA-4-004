@@ -1,0 +1,192 @@
+/* =========================================================
+   1. SET THE CORRECT DATABASE
+========================================================= */
+USE HealthcareDataWarehouse;
+GO
+/* =========================================================
+   AUTOMATED PIPELINE PROCEDURE (BRONZE LOAD)
+   Purpose: Append new data and track changes (Updates) using 
+            a Full Row Hash mechanism to ensure idempotency.
+========================================================= */
+CREATE OR ALTER PROCEDURE ops.sp_run_healthcare_bronze_load
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @job_id UNIQUEIDENTIFIER;
+    DECLARE @rows INT;
+
+    BEGIN TRY
+        --------------------------------------------------
+        -- 1. INITIALIZE LOGGING (START JOB & TASK)
+        --------------------------------------------------
+        EXEC ops.sp_start_job 
+            @pipeline_name = 'Healthcare Bronze Load',
+            @job_run_id = @job_id OUTPUT;
+
+        EXEC ops.sp_start_task 
+            @job_run_id = @job_id,
+            @task_name = 'Load Bronze Healthcare_Dataset';
+
+        --------------------------------------------------
+        -- 2. CORE ACTION: INSERT NEW ROWS & CAPTURE UPDATES
+        --------------------------------------------------
+        INSERT INTO bronze.Healthcare_Dataset (
+            -- Audit & Lineage Columns
+            ingested_at, source_file, batch_id, pipeline_name, source_row_hash,
+            
+            -- Raw Data Columns
+            patient_id, birth_year, sex, state, encounter_id, icd10_code, diagnosis_display, 
+            severity_index, comorbidity_count, has_diabetes, has_hypertension, has_chf, sbp_mmhg, 
+            dbp_mmhg, heart_rate_bpm, spo2_pct, temperature_f, bmi, respiratory_rate, hba1c_pct, 
+            glucose_mg_dl, creatinine_mg_dl, wbc_10e3_ul, nt_probnp_pg_ml, medication_adherence_pdc, 
+            hai_flag, follow_up_within_48h_flag, triage_timestamp, physician_assessment_timestamp, 
+            admit_timestamp, bed_request_time, bed_assign_time, unit_assigned, bed_occupancy_pct, 
+            los_days, discharge_timestamp, safety_incident_flag, incident_type, incident_severity, 
+            claim_id, payer, npi_billing, drg_weight, submitted_charge_usd, allowed_amount_usd, 
+            patient_responsibility_usd, fraud_upcoding_flag, fraud_duplicate_flag, fraud_unbundling_flag, 
+            claim_denial_flag, denial_reason_code, nurse_emp_id, nurse_role, nurse_unit, doc_emp_id, 
+            doctor_specialty, shift_hours, patients_per_nurse_ratio, overtime_hours, burnout_exhaustion_mbi, 
+            burnout_cynicism_mbi, turnover_risk_index, cahps_nurse_communication, cahps_doctor_communication, 
+            cahps_responsiveness, cahps_pain_management, cahps_discharge_info, cahps_care_transition, 
+            cahps_cleanliness, cahps_quietness, telehealth_used_flag, appointment_request_date, 
+            patient_reported_wait_time_mins, hedis_hba1c_tested, hedis_hba1c_poor_control, pdsa_cycle_id, 
+            himss_emram_stage, doctor_name, patient_name, nurse_name, payer_id, prev_discharge, 
+            days_since_last_stay, is_readmit_30d
+        )
+        SELECT 
+            -- A. Generate Audit Metadata
+            GETDATE() AS ingested_at,
+            'New_Generated_Dataset.csv' AS source_file,
+            CAST(@job_id AS VARCHAR(100)) AS batch_id, 
+            'Healthcare Bronze Load' AS pipeline_name,
+            
+            -- B. FULL ROW HASH: Concatenate all raw columns to create a unique fingerprint
+            HASHBYTES('SHA2_256', CONCAT_WS('|', 
+                s.patient_id, s.birth_year, s.sex, s.state, s.encounter_id, s.icd10_code, s.diagnosis_display, 
+                s.severity_index, s.comorbidity_count, s.has_diabetes, s.has_hypertension, s.has_chf, s.sbp_mmhg, 
+                s.dbp_mmhg, s.heart_rate_bpm, s.spo2_pct, s.temperature_f, s.bmi, s.respiratory_rate, s.hba1c_pct, 
+                s.glucose_mg_dl, s.creatinine_mg_dl, s.wbc_10e3_ul, s.nt_probnp_pg_ml, s.medication_adherence_pdc, 
+                s.hai_flag, s.follow_up_within_48h_flag, s.triage_timestamp, s.physician_assessment_timestamp, 
+                s.admit_timestamp, s.bed_request_time, s.bed_assign_time, s.unit_assigned, s.bed_occupancy_pct, 
+                s.los_days, s.discharge_timestamp, s.safety_incident_flag, s.incident_type, s.incident_severity, 
+                s.claim_id, s.payer, s.npi_billing, s.drg_weight, s.submitted_charge_usd, s.allowed_amount_usd, 
+                s.patient_responsibility_usd, s.fraud_upcoding_flag, s.fraud_duplicate_flag, s.fraud_unbundling_flag, 
+                s.claim_denial_flag, s.denial_reason_code, s.nurse_emp_id, s.nurse_role, s.nurse_unit, s.doc_emp_id, 
+                s.doctor_specialty, s.shift_hours, s.patients_per_nurse_ratio, s.overtime_hours, s.burnout_exhaustion_mbi, 
+                s.burnout_cynicism_mbi, s.turnover_risk_index, s.cahps_nurse_communication, s.cahps_doctor_communication, 
+                s.cahps_responsiveness, s.cahps_pain_management, s.cahps_discharge_info, s.cahps_care_transition, 
+                s.cahps_cleanliness, s.cahps_quietness, s.telehealth_used_flag, s.appointment_request_date, 
+                s.patient_reported_wait_time_mins, s.hedis_hba1c_tested, s.hedis_hba1c_poor_control, s.pdsa_cycle_id, 
+                s.himss_emram_stage, s.doctor_name, s.patient_name, s.nurse_name, s.payer_id, s.prev_discharge, 
+                s.days_since_last_stay, s.is_readmit_30d
+            )) AS source_row_hash,
+            
+            -- C. Select Raw Data from Staging
+            s.patient_id, s.birth_year, s.sex, s.state, s.encounter_id, s.icd10_code, s.diagnosis_display, 
+            s.severity_index, s.comorbidity_count, s.has_diabetes, s.has_hypertension, s.has_chf, s.sbp_mmhg, 
+            s.dbp_mmhg, s.heart_rate_bpm, s.spo2_pct, s.temperature_f, s.bmi, s.respiratory_rate, s.hba1c_pct, 
+            s.glucose_mg_dl, s.creatinine_mg_dl, s.wbc_10e3_ul, s.nt_probnp_pg_ml, s.medication_adherence_pdc, 
+            s.hai_flag, s.follow_up_within_48h_flag, s.triage_timestamp, s.physician_assessment_timestamp, 
+            s.admit_timestamp, s.bed_request_time, s.bed_assign_time, s.unit_assigned, s.bed_occupancy_pct, 
+            s.los_days, s.discharge_timestamp, s.safety_incident_flag, s.incident_type, s.incident_severity, 
+            s.claim_id, s.payer, s.npi_billing, s.drg_weight, s.submitted_charge_usd, s.allowed_amount_usd, 
+            s.patient_responsibility_usd, s.fraud_upcoding_flag, s.fraud_duplicate_flag, s.fraud_unbundling_flag, 
+            s.claim_denial_flag, s.denial_reason_code, s.nurse_emp_id, s.nurse_role, s.nurse_unit, s.doc_emp_id, 
+            s.doctor_specialty, s.shift_hours, s.patients_per_nurse_ratio, s.overtime_hours, s.burnout_exhaustion_mbi, 
+            s.burnout_cynicism_mbi, s.turnover_risk_index, s.cahps_nurse_communication, s.cahps_doctor_communication, 
+            s.cahps_responsiveness, s.cahps_pain_management, s.cahps_discharge_info, s.cahps_care_transition, 
+            s.cahps_cleanliness, s.cahps_quietness, s.telehealth_used_flag, s.appointment_request_date, 
+            s.patient_reported_wait_time_mins, s.hedis_hba1c_tested, s.hedis_hba1c_poor_control, s.pdsa_cycle_id, 
+            s.himss_emram_stage, s.doctor_name, s.patient_name, s.nurse_name, s.payer_id, s.prev_discharge, 
+            s.days_since_last_stay, s.is_readmit_30d
+        FROM staging.Healthcare_Dataset s
+        
+        -- D. THE ANTI-JOIN (The Gatekeeper): 
+        -- Only insert the row if its exact full hash does not already exist in the Bronze table.
+        WHERE NOT EXISTS (
+            SELECT 1 
+            FROM bronze.Healthcare_Dataset b 
+            WHERE b.source_row_hash = HASHBYTES('SHA2_256', CONCAT_WS('|', 
+                s.patient_id, s.birth_year, s.sex, s.state, s.encounter_id, s.icd10_code, s.diagnosis_display, 
+                s.severity_index, s.comorbidity_count, s.has_diabetes, s.has_hypertension, s.has_chf, s.sbp_mmhg, 
+                s.dbp_mmhg, s.heart_rate_bpm, s.spo2_pct, s.temperature_f, s.bmi, s.respiratory_rate, s.hba1c_pct, 
+                s.glucose_mg_dl, s.creatinine_mg_dl, s.wbc_10e3_ul, s.nt_probnp_pg_ml, s.medication_adherence_pdc, 
+                s.hai_flag, s.follow_up_within_48h_flag, s.triage_timestamp, s.physician_assessment_timestamp, 
+                s.admit_timestamp, s.bed_request_time, s.bed_assign_time, s.unit_assigned, s.bed_occupancy_pct, 
+                s.los_days, s.discharge_timestamp, s.safety_incident_flag, s.incident_type, s.incident_severity, 
+                s.claim_id, s.payer, s.npi_billing, s.drg_weight, s.submitted_charge_usd, s.allowed_amount_usd, 
+                s.patient_responsibility_usd, s.fraud_upcoding_flag, s.fraud_duplicate_flag, s.fraud_unbundling_flag, 
+                s.claim_denial_flag, s.denial_reason_code, s.nurse_emp_id, s.nurse_role, s.nurse_unit, s.doc_emp_id, 
+                s.doctor_specialty, s.shift_hours, s.patients_per_nurse_ratio, s.overtime_hours, s.burnout_exhaustion_mbi, 
+                s.burnout_cynicism_mbi, s.turnover_risk_index, s.cahps_nurse_communication, s.cahps_doctor_communication, 
+                s.cahps_responsiveness, s.cahps_pain_management, s.cahps_discharge_info, s.cahps_care_transition, 
+                s.cahps_cleanliness, s.cahps_quietness, s.telehealth_used_flag, s.appointment_request_date, 
+                s.patient_reported_wait_time_mins, s.hedis_hba1c_tested, s.hedis_hba1c_poor_control, s.pdsa_cycle_id, 
+                s.himss_emram_stage, s.doctor_name, s.patient_name, s.nurse_name, s.payer_id, s.prev_discharge, 
+                s.days_since_last_stay, s.is_readmit_30d
+            ))
+        );
+
+        --------------------------------------------------
+        -- 3. FINALIZE LOGGING (SUCCESS)
+        --------------------------------------------------
+        SET @rows = @@ROWCOUNT;
+
+        EXEC ops.sp_end_task 
+            @job_run_id = @job_id,
+            @task_name = 'Load Bronze Healthcare_Dataset',
+            @status = 'Success',
+            @rows_inserted = @rows;
+
+        EXEC ops.sp_end_job 
+            @job_run_id = @job_id,
+            @status = 'Success';
+
+    END TRY
+    BEGIN CATCH
+        --------------------------------------------------
+        -- 4. ERROR HANDLING (FAILURE)
+        --------------------------------------------------
+        DECLARE @error NVARCHAR(MAX) = ERROR_MESSAGE();
+
+        EXEC ops.sp_end_task 
+            @job_run_id = @job_id,
+            @task_name = 'Load Bronze Healthcare_Dataset',
+            @status = 'Failed',
+            @message = @error;
+
+        EXEC ops.sp_end_job 
+            @job_run_id = @job_id,
+            @status = 'Failed',
+            @message = @error;
+THROW;
+    END CATCH
+END;
+GO
+
+
+-- Load data from Staging to Bronze with TRY_CAST to prevent failures
+INSERT INTO bronze.ML_Predictions (
+    encounter_id, 
+    ML_safety_incident_flag, 
+    ML_safety_risk_score, 
+    ML_predicted_los_days, 
+    ML_predicted_total_cost
+)
+SELECT 
+    encounter_id, 
+    TRY_CAST(ML_safety_incident_flag AS INT), 
+    TRY_CAST(ML_safety_risk_score AS DECIMAL(10,2)), 
+    TRY_CAST(ML_predicted_los_days AS DECIMAL(10,2)), 
+    TRY_CAST(ML_predicted_total_cost AS DECIMAL(10,2))
+FROM staging.ML_Predictions;
+GO
+
+
+-- VERIFICATION CHECK: Bronze
+PRINT '--- Bronze Verification ---';
+SELECT COUNT(*) AS Bronze_Total_Rows FROM bronze.ML_Predictions;
+SELECT TOP 5 * FROM bronze.ML_Predictions ORDER BY ingested_at DESC;
+GO
+
