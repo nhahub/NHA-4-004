@@ -72,16 +72,25 @@ FROM silver.Healthcare_Dataset
 WHERE payer_id IS NOT NULL;
 GO
 
--- Dim_Date (Calendar Table)
+-- Dim_Date (Dynamic Calendar Table)
 CREATE OR ALTER VIEW gold.vw_Dim_Date AS
 WITH NumberTally AS (
-    SELECT TOP 2000 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS N
+    -- Generates up to 10,000 days (approx. 27 years), ensuring it never runs out of dates
+    SELECT TOP 10000 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS N
     FROM sys.messages
 ),
+DateBounds AS (
+    -- Dynamically finds the earliest date in your dataset
+    SELECT 
+        ISNULL(CAST(MIN(admit_timestamp) AS DATE), '2024-01-01') AS StartDate
+    FROM silver.Healthcare_Dataset
+),
 DateGenerator AS (
-    SELECT DATEADD(DAY, N, '2024-01-01') AS FullDate
-    FROM NumberTally
-    WHERE DATEADD(DAY, N, '2024-01-01') <= '2026-12-31'
+    SELECT DATEADD(DAY, t.N, b.StartDate) AS FullDate
+    FROM NumberTally t
+    CROSS JOIN DateBounds b
+    -- Automatically extends the calendar to the end of the current system year
+    WHERE DATEADD(DAY, t.N, b.StartDate) <= DATEFROMPARTS(YEAR(GETDATE()) + 1, 12, 31)
 )
 SELECT 
     CAST(FORMAT(FullDate, 'yyyyMMdd') AS INT) AS DateKey,
