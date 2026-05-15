@@ -72,8 +72,8 @@ FROM silver.Healthcare_Dataset
 WHERE payer_id IS NOT NULL;
 GO
 
---Dim_Date
-CREATE VIEW gold.vw_Dim_Date_final AS
+-- Dim_Date
+CREATE OR ALTER VIEW gold.vw_Dim_Date_final AS
 WITH 
 L0 AS (SELECT 1 AS c UNION ALL SELECT 1),
 L1 AS (SELECT 1 AS c FROM L0 a CROSS JOIN L0 b),
@@ -106,7 +106,6 @@ SELECT
     CASE WHEN DATENAME(WEEKDAY, FullDate) IN ('Saturday', 'Friday') THEN 1 ELSE 0 END AS IsWeekend
 FROM DateGenerator;
 GO
-
 
 /* ------------------------------------------------------------------------------
    2. ENRICHED FACT VIEW
@@ -274,9 +273,10 @@ SELECT
     END AS ML_Incident_Alert,
 
     -- 2. Risk classification based on the score (thresholds can be adjusted based on data distribution)
+    -- Max score is 5.18, Min is 4.62, Average is ~4.93
     CASE 
-        WHEN ML_safety_risk_score >= 4.5 THEN 'Critical Risk'
-        WHEN ML_safety_risk_score >= 3.0 THEN 'Moderate Risk'
+        WHEN ML_safety_risk_score >= 5.10 THEN 'Critical Risk'
+        WHEN ML_safety_risk_score >= 4.85 THEN 'Moderate Risk'
         ELSE 'Low Risk'
     END AS ML_Risk_Band,
 
