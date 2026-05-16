@@ -1,0 +1,48 @@
+import pandas as pd
+import logging
+import os
+from sqlalchemy import create_engine
+import urllib
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def run_bridge():
+    # 1. Configuration
+    csv_file = "healthcare_simulation.csv"
+    table_name = "Healthcare_Dataset" # اسم الجدول
+    schema_name = "staging"           # السكيما بتاعتنا
+    
+    # 2. Connection details (نفس السيرفر بتاعك)
+    host = r"DESKTOP-AI083LI\SQLEXPRESS"
+    db = "HealthcareDataWarehouse"
+    
+    if not os.path.exists(csv_file):
+        logging.error(f"Bridge failed: {csv_file} not found.")
+        return False
+
+    try:
+        # 3. Read the generated data
+        df = pd.read_csv(csv_file)
+        
+        # 4. Create Connection
+        conn_str = (
+            f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+            f"SERVER={host};"
+            f"DATABASE={db};"
+            f"Trusted_Connection=yes;"
+        )
+        params = urllib.parse.quote_plus(conn_str)
+        engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
+
+        # 5. Upload directly to staging schema
+        logging.info(f"Bridge: Uploading {len(df)} rows to {schema_name}.{table_name}...")
+        df.to_sql(name=table_name, schema=schema_name, con=engine, if_exists='replace', index=False)
+        
+        logging.info("Bridge: Success.")
+        return True
+    except Exception as e:
+        logging.error(f"Bridge Error: {e}")
+        return False
+
+if __name__ == "__main__":
+    run_bridge()
