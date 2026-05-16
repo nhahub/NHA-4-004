@@ -15,7 +15,7 @@ logging.basicConfig(
     ],
 )
 
-# --- 2. SCRIPT FILENAMES (⚠️ تأكدي إن الأسامي دي مطابقة للي عندك بالظبط) ---
+# --- 2. SCRIPT FILENAMES 
 GENERATE_SCRIPT = "Data-Generator Healthcare.py"
 BRIDGE_SCRIPT   = "Bridge.py"
 RUNNER_SCRIPT   = "Python run loading code.py"
