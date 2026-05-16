@@ -9,8 +9,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def run_bridge():
     # 1. Configuration
     csv_file = "healthcare_simulation.csv"
-    table_name = "Healthcare_Dataset" # اسم الجدول
-    schema_name = "staging"           # السكيما بتاعتنا
+    table_name = "Healthcare_Dataset" 
+    schema_name = "staging"          
     
     # 2. Connection details (نفس السيرفر بتاعك)
     host = r"DESKTOP-AI083LI\SQLEXPRESS"
