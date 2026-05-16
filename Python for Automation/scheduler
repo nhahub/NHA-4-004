@@ -1,0 +1,87 @@
+import logging
+import os
+import subprocess
+import sys
+import time
+import schedule
+
+# --- 1. CONFIGURATION & LOGGING ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("pipeline_orchestrator.log"),
+    ],
+)
+
+# --- 2. SCRIPT FILENAMES (⚠️ تأكدي إن الأسامي دي مطابقة للي عندك بالظبط) ---
+GENERATE_SCRIPT = "Data-Generator Healthcare.py"
+BRIDGE_SCRIPT   = "Bridge.py"
+RUNNER_SCRIPT   = "Python run loading code.py"
+
+def run_python_script(script_name):
+    """Executes a python script and captures its output."""
+    logging.info(f"--- STARTING STEP: {script_name} ---")
+    
+    if not os.path.exists(script_name):
+        logging.error(f"FAILURE: File '{script_name}' not found in the directory!")
+        return False
+
+    try:
+        result = subprocess.run(
+            [sys.executable, script_name],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        if result.stdout:
+            logging.info(f"SUCCESS: {script_name} output:\n{result.stdout}")
+        return True
+    except subprocess.CalledProcessError as exc:
+        logging.error(f"FAILURE: {script_name} failed with error.")
+        if exc.stderr:
+            logging.error(f"Error details:\n{exc.stderr}")
+        return False
+
+def run_full_etl_pipeline():
+    """The main sequence of the ETL process."""
+    logging.info("===============================================")
+    logging.info("STARTING HEALTHCARE DATA WAREHOUSE BATCH")
+    logging.info("===============================================")
+
+    # STEP 1: GENERATE DATA
+    if not run_python_script(GENERATE_SCRIPT):
+        logging.error("Pipeline stopped at STEP 1: Generation.")
+        return
+
+    # STEP 2: BRIDGE (UPLOAD CSV TO SQL)
+    if not run_python_script(BRIDGE_SCRIPT):
+        logging.error("Pipeline stopped at STEP 2: Bridge/Upload.")
+        return
+
+    # STEP 3: RUN PROCEDURES (STAGING -> BRONZE -> SILVER -> GOLD)
+    if not run_python_script(RUNNER_SCRIPT):
+        logging.error("Pipeline stopped at STEP 3: SQL Execution.")
+        return
+
+    logging.info("===============================================")
+    logging.info("PIPELINE COMPLETED SUCCESSFULLY AT ALL LEVELS")
+    logging.info("===============================================")
+
+def main():
+    # Schedule time (مثلاً هيشتغل كل يوم الساعة 6 الصبح لوحده)
+    schedule_time = "06:00"
+    
+    logging.info("Executing initial startup run...")
+    run_full_etl_pipeline()
+
+    logging.info(f"Scheduler is active. Daily run scheduled for {schedule_time}.")
+    schedule.every().day.at(schedule_time).do(run_full_etl_pipeline)
+
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()
