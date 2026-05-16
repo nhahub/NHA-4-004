@@ -1,0 +1,162 @@
+import pandas as pd
+import numpy as np
+import random
+import uuid
+from faker import Faker
+from datetime import datetime, timedelta
+
+fake = Faker()
+
+def generate_healthcare_data(num_base_records=100):
+    data = []
+    
+    # Configuration 
+    units = ['Ortho', 'Micu', 'ICU', 'SICU', 'Cardiac', 'Oncology', 'General', 'Med-Surg A', 'Med-Surg B']
+    specialties = ['Neurosurgery', 'General Surgery', 'Cardiothoracic', 'Urology', 'Orthopedics']
+    payers = {
+        'PAY-001': 'Medicare',
+        'PAY-002': 'Self-Pay',
+        'PAY-003': 'Aetna',
+        'PAY-004': 'Bluecross',
+        'PAY-005': 'Cigna',
+        'PAY-006': 'Unitedhealth'
+    }
+    icd_map = {
+        'K35.80': 'Unspecified acute appendicitis',
+        'M16.11': 'Primary osteoarthritis, right hip',
+        'K80.20': 'Calculus of gallbladder w/o obstruction',
+        'M17.12': 'Primary osteoarthritis, left knee',
+        'J93.0': 'Spontaneous tension pneumothorax',
+        'N20.0': 'Calculus of kidney',
+        'I63.9': 'Cerebral infarction, unspecified',
+        'I25.10': 'Atherosclerotic heart disease of native coronary artery',
+        'L03.311': 'Cellulitis of abdominal wall'
+    }
+
+    for i in range(num_base_records):
+        # 1. Identity & Demographics
+        p_id = f"PAT-{1000000 + i}"
+        p_name = fake.name()
+        birth_year = random.randint(1938, 1990)
+        sex = random.choice(['Male', 'Female'])
+        state = random.choice(['NC', 'Fl', 'Mi', 'Pa', 'Ny', 'Tx', 'Ca'])
+        
+        # 2. Base Encounter Logic
+        enc_id = str(uuid.uuid4())
+        icd = random.choice(list(icd_map.keys()))
+        diag = icd_map[icd]
+        
+        # Randomly decide if this is a readmission scenario 
+        has_readmission = random.random() < 0.2
+        iterations = [enc_id]
+        if has_readmission:
+            iterations.append(f"{enc_id}_R")
+
+        for current_enc_id in iterations:
+            is_readmit = 1 if "_R" in current_enc_id else 0
+            
+            # Clinical Flags
+            has_diabetes = 1 if random.random() < 0.3 else 0
+            has_hypertension = 1 if random.random() < 0.4 else 0
+            has_chf = 1 if random.random() < 0.1 else 0
+            
+            # Time Logic (Minutes:Seconds format)
+            wait_time = random.randint(10, 250)
+            bed_lag = random.randint(20, 180)
+            los_days = random.randint(1, 7)
+            
+            # Financials
+            charge = round(random.uniform(10000, 60000), 2)
+            allowed = round(charge * 0.65, 2)
+            
+            # Staffing
+            doc_id = f"DOC-{random.randint(20000, 23000)}"
+            nurse_id = f"NRS-{random.randint(10000, 15000)}"
+
+            record = {
+                'patient_id': p_id, 'birth_year': birth_year, 'sex': sex, 'state': state,
+                'encounter_id': current_enc_id, 'icd10_code': icd, 'diagnosis_display': diag,
+                'severity_index': round(random.uniform(0.3, 0.95), 3),
+                'comorbidity_count': random.randint(0, 4),
+                'has_diabetes': has_diabetes, 'has_hypertension': has_hypertension, 'has_chf': has_chf,
+                'sbp_mmhg': round(random.uniform(110, 175), 1),
+                'dbp_mmhg': round(random.uniform(65, 105), 1),
+                'heart_rate_bpm': round(random.uniform(60, 105), 1),
+                'spo2_pct': round(random.uniform(90, 99), 1),
+                'temperature_f': round(random.uniform(97.5, 100.5), 1),
+                'bmi': round(random.uniform(22, 39), 1),
+                'respiratory_rate': random.randint(16, 22),
+                'hba1c_pct': round(random.uniform(7.5, 9.5), 1) if has_diabetes else round(random.uniform(4.5, 5.7), 1),
+                'glucose_mg_dl': round(random.uniform(70, 300), 1),
+                'creatinine_mg_dl': round(random.uniform(0.7, 2.8), 1),
+                'wbc_10e3_ul': round(random.uniform(4.0, 15.0), 1),
+                'nt_probnp_pg_ml': random.randint(1000, 4000) if has_chf else random.randint(30, 150),
+                'medication_adherence_pdc': round(random.uniform(0.4, 0.99), 2),
+                'hai_flag': 0, 'follow_up_within_48h_flag': random.choice([0, 1]),
+                # Timestamps (Sample format MM:SS)
+                'triage_timestamp': f"{random.randint(0, 59):02d}:00.0",
+                'physician_assessment_timestamp': f"{random.randint(0, 59):02d}:00.0",
+                'admit_timestamp': f"{random.randint(0, 59):02d}:00.0",
+                'bed_request_time': f"{random.randint(0, 59):02d}:00.0",
+                'bed_assign_time': f"{random.randint(0, 59):02d}:00.0",
+                'unit_assigned': random.choice(units),
+                'bed_occupancy_pct': round(random.uniform(70, 95), 1),
+                'los_days': los_days,
+                'discharge_timestamp': f"{random.randint(0, 59):02d}:00.0",
+                'safety_incident_flag': 1 if random.random() < 0.05 else 0,
+                'incident_type': 'No Incident', 'incident_severity': 'No Incident',
+                'claim_id': f"CLM-{9000000 + random.randint(1, 999999)}",
+                'payer_id': random.choice(list(payers.keys())),
+                'payer': '', # Will fill later
+                'npi_billing': fake.random_number(digits=10),
+                'drg_weight': round(random.uniform(0.8, 2.5), 4),
+                'submitted_charge_usd': charge, 'allowed_amount_usd': allowed,
+                'patient_responsibility_usd': round(allowed * 0.15, 2),
+                'fraud_upcoding_flag': 0, 'fraud_duplicate_flag': 0, 'fraud_unbundling_flag': 0,
+                'claim_denial_flag': 0, 'denial_reason_code': 'Approved',
+                'equipment_type': random.choice(['Ultrasound', 'CT Scanner', 'MRI', 'X-Ray']),
+                'equipment_usage_minutes': random.randint(5, 60),
+                'consumable_supply_cost_usd': round(random.uniform(80, 450), 2),
+                'nurse_emp_id': nurse_id, 'nurse_role': 'RN', 'nurse_unit': random.choice(units),
+                'doc_emp_id': doc_id, 'doctor_specialty': random.choice(specialties),
+                'shift_hours': random.choice([8, 10, 12]),
+                'patients_per_nurse_ratio': random.randint(3, 8),
+                'overtime_hours': round(random.uniform(0, 5), 1),
+                'burnout_exhaustion_mbi': round(random.uniform(1.0, 4.8), 2),
+                'burnout_cynicism_mbi': round(random.uniform(0.8, 3.8), 2),
+                'turnover_risk_index': round(random.uniform(0.001, 0.6), 3),
+                'cahps_nurse_communication': round(random.uniform(2, 4), 1),
+                'cahps_doctor_communication': round(random.uniform(2, 4), 1),
+                'cahps_responsiveness': round(random.uniform(2, 4), 1),
+                'cahps_pain_management': round(random.uniform(2, 4), 1),
+                'cahps_discharge_info': round(random.uniform(2, 4), 1),
+                'cahps_care_transition': round(random.uniform(2, 4), 1),
+                'cahps_cleanliness': round(random.uniform(2, 4), 1),
+                'cahps_quietness': round(random.uniform(2, 4), 1),
+                'telehealth_used_flag': 0, 'appointment_request_date': '07/02/2024',
+                'patient_reported_wait_time_mins': random.randint(40, 250),
+                'hedis_hba1c_tested': 1 if has_diabetes else 0,
+                'hedis_hba1c_poor_control': 1 if has_diabetes and random.random() < 0.2 else 0,
+                'pdsa_cycle_id': 'None', 'himss_emram_stage': 7,
+                'doctor_name': fake.name(), 'patient_name': p_name, 'nurse_name': fake.name(),
+                'prev_discharge': 'NULL', 'days_since_last_stay': 'NULL',
+                'is_readmit_30d': is_readmit,
+                'wait_time_mins': wait_time, 'bed_lag_mins': bed_lag,
+                'true_los_days': round(los_days * random.uniform(0.8, 1.2), 2),
+                'true_patient_resp': round(allowed * 0.2, 2),
+                'billing_error_amount': 0, 'staff_burnout_category': 'Low'
+            }
+            # Mapping payer name and cleaning up readmission logic
+            record['payer'] = payers[record['payer_id']]
+            if is_readmit:
+                record['prev_discharge'] = "54:00.0"
+                record['days_since_last_stay'] = random.randint(1, 30)
+            
+            data.append(record)
+
+    return pd.DataFrame(data)
+
+# Generate and save
+df = generate_healthcare_data(100)
+df.to_csv('healthcare_simulation.csv', index=False)
+print("Consistent Healthcare Data Generated Successfully.")
