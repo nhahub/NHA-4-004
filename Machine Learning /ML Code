@@ -1,0 +1,197 @@
+import pyodbc
+import pandas as pd
+from sqlalchemy import create_engine, text
+import matplotlib.pyplot as plt
+from sqlalchemy import Integer, Float
+import seaborn as sns
+import time
+from datetime import datetime
+from sqlalchemy import create_engine
+from sklearn.metrics import classification_report, accuracy_score, r2_score, mean_absolute_error
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.linear_model import LinearRegression, LogisticRegression
+
+#1. --Connection --
+SERVER = r'AYA\SQLEXPRESS'
+DATABASE = 'HealthcareDataWarehouse'
+
+connection_url = (
+    f"mssql+pyodbc://@{SERVER}/{DATABASE}?"
+    "driver=ODBC+Driver+18+for+SQL+Server&"  
+    "Trusted_Connection=yes&"
+    "TrustServerCertificate=yes"            
+)
+
+engine = create_engine(connection_url)
+
+def run_final_pipeline():
+    start_time = time.time()
+    print("Execution Started at: " + datetime.now().strftime('%H:%M:%S'))
+    
+    # --- 2. DATA EXTRACTION ---
+    
+    query = """
+    SELECT 
+        encounter_id, sbp_mmhg, heart_rate_bpm, wbc_10e3_ul, 
+        wait_time_mins, bed_occupancy_pct, safety_incident_flag,
+        turnover_risk_index,severity_index, comorbidity_count, 
+        birth_year, unit_assigned, true_los_days, drg_weight, 
+        payer, submitted_charge_usd
+    FROM silver.Healthcare_Dataset
+    """
+
+
+    print("Step 1: Connecting to SQL... Loading 1.1M rows for Analysis.")
+    try:
+        with engine.connect() as conn:
+            chunks = []
+            # Using chunksize=200000 for faster streaming
+            reader = pd.read_sql(text(query), conn, chunksize=200000)
+            for chunk in reader:
+                chunks.append(chunk)
+                print(f"   Loaded {len(chunks)*200000:,} rows...")
+            
+            print("Merging chunks into Master DataFrame...")
+            df = pd.concat(chunks, ignore_index=True)
+            del chunks # Free memory immediately
+            print(f"--- Data Loaded Successfully: {len(df):,} rows ---")
+    except Exception as e:
+        print(f"Extraction Error: {e}")
+        return
+    # PHASE 2: PREPROCESSING
+    print("Preprocessing 1.1M rows...")
+    df['age'] = 2026 - df['birth_year']
+    df = df.fillna(0)
+    le = LabelEncoder()
+    df['unit_encoded'] = le.fit_transform(df['unit_assigned'].astype(str))
+    df['payer_encoded'] = le.fit_transform(df['payer'].astype(str))
+    
+    # Safety sample for plotting
+    eda_sample = df.sample(n=5000)
+
+    # --- MODEL 1: Safety Incident ---
+    print("Processing Model 1: Safety...")
+    f1 = ['sbp_mmhg', 'heart_rate_bpm', 'wbc_10e3_ul', 'wait_time_mins', 'bed_occupancy_pct']
+    X1_train, X1_test, y1_train, y1_test = train_test_split(df[f1], df['safety_incident_flag'].astype(int), test_size=0.2)
+    m1 = LogisticRegression(max_iter=1000).fit(X1_train, y1_train)
+
+    y1_pred = m1.predict(X1_test)
+    print("--- Model 1 Report ---")
+    print(f"Accuracy: {accuracy_score(y1_test, y1_pred):.2f}")
+    print(classification_report(y1_test, y1_pred))
+    
+    # 3 Charts for Safety
+    plt.figure(figsize=(8, 5))
+    sns.histplot(eda_sample['wait_time_mins'], color='red', kde=True).set_title('Wait Time Distribution')
+    plt.show()
+    plt.figure(figsize=(8, 5))
+    eda_sample['safety_incident_flag'].value_counts().plot.pie(autopct='%1.1f%%').set_title('Incident Proportion')
+    plt.show()
+    plt.figure(figsize=(8, 5))
+    sns.barplot(x='severity_index', y='heart_rate_bpm', data=eda_sample).set_title('Heart Rate vs Severity')
+    plt.show()
+
+    
+
+    # --- MODEL 3: Predicted LOS ---
+
+    print("\n Processing Model 3: Length of Stay (LOS)...")
+    f3 = ['severity_index', 'comorbidity_count', 'age', 'unit_encoded']
+    X3_train, X3_test, y3_train, y3_test = train_test_split(df[f3], df['true_los_days'], test_size=0.2, random_state=42)
+    m3 = LinearRegression().fit(X3_train, y3_train)
+    
+    y3_pred = m3.predict(X3_test)
+    print(f"--- Model 3 Performance ---")
+    print(f" R2 Score: {r2_score(y3_test, y3_pred):.2f}")
+    print(f" Mean Absolute Error: {mean_absolute_error(y3_test, y3_pred):.2f} days")
+    
+    # 3 Charts for LOS
+    plt.figure(figsize=(8, 5))
+    sns.regplot(x='age', y='true_los_days', data=eda_sample, scatter_kws={'alpha':0.3}).set_title('Age vs Length of Stay')
+    plt.show()
+    plt.figure(figsize=(8, 5))
+    sns.violinplot(x='severity_index', y='true_los_days', data=eda_sample).set_title('LOS by Severity Index')
+    plt.show()
+    plt.figure(figsize=(8, 5))
+    sns.lineplot(x='comorbidity_count', y='true_los_days', data=eda_sample).set_title('Comorbidity count vs LOS')
+    plt.show()
+
+
+    print("\n Processing Model 4: Submitted Charge Prediction...")
+    f4 = ['drg_weight', 'true_los_days', 'severity_index', 'payer_encoded']
+    X4_train, X4_test, y4_train, y4_test = train_test_split(df[f4], df['submitted_charge_usd'], test_size=0.2, random_state=42)
+    m4 = LinearRegression().fit(X4_train, y4_train)
+    
+   
+    y4_pred = m4.predict(X4_test)
+    print(f"--- Model 4 Performance ---")
+    print(f" R2 Score: {r2_score(y4_test, y4_pred):.2f}")
+    print(f" Mean Absolute Error: ${mean_absolute_error(y4_test, y4_pred):,.2f}")
+
+
+
+    # 3 Charts for Cost
+    plt.figure(figsize=(8, 5))
+    sns.scatterplot(x='drg_weight', y='submitted_charge_usd', data=eda_sample).set_title('DRG Weight vs Actual Cost')
+    plt.show()
+    plt.figure(figsize=(8, 5))
+    sns.boxplot(x='payer', y='submitted_charge_usd', data=eda_sample).set_title('Payer Type vs Cost')
+    plt.show()
+    plt.figure(figsize=(8, 5))
+    sns.heatmap(eda_sample[['submitted_charge_usd', 'drg_weight', 'age']].corr(), annot=True).set_title('Cost Feature Correlation')
+    plt.show()
+
+    # --- 8. FINAL PREDICTIONS & SQL EXPORT ---
+    print("\n Generating final 1.1M predictions for Export...")
+    upload_engine = create_engine(
+    connection_url,          
+    fast_executemany=True
+)
+
+    # 1. Generate predictions
+    df['ML_safety_incident_flag'] = m1.predict(df[f1])
+    df['ML_safety_risk_score']    = (m1.predict_proba(df[f1])[:, 1] * 100).round(2)
+    df['ML_predicted_los_days']   = m3.predict(df[f3]).round(2)
+    df['ML_predicted_total_cost'] = m4.predict(df[f4]).round(2)
+
+    print(" Uploading results to SQL [silver.ML_Results]...")
+
+    results_cols = [
+        'encounter_id',
+        'ML_safety_incident_flag',
+        'ML_safety_risk_score',
+        'ML_predicted_los_days',
+        'ML_predicted_total_cost'
+    ]
+
+    # 2. Explicit dtypes prevent precision/BindParameter errors
+    
+    dtype_map = {
+        'ML_safety_incident_flag' : BIT(),
+        'ML_safety_risk_score'    : Float(),
+        'ML_predicted_los_days'   : Float(),
+        'ML_predicted_total_cost' : Float(),
+    }
+
+    try:
+        df[results_cols].to_sql(        
+            'ML_Results',
+            upload_engine,
+            schema='silver',
+            if_exists='replace',
+            index=False,
+            chunksize=1000,
+            dtype=dtype_map           
+        )
+        print(" Data successfully returned to SQL Server.")
+
+    except Exception as export_error:
+        print(f" Export failed: {export_error}")
+
+    finally:
+        upload_engine.dispose()        
+
+
+if __name__ == "__main__":
+    run_final_pipeline()
