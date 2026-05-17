@@ -1,0 +1,175 @@
+import pandas as pd
+import matplotlib_inline
+import matplotlib.pyplot as plt
+
+df=pd.read_csv('New_Generated_Dataset.csv')
+df
+df.info()
+
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+
+df_sample = df.sample(n=100000, random_state=42)
+sns.set_theme(style="whitegrid")
+
+fig, axes = plt.subplots(3, 2, figsize=(16, 18))
+
+# 1. Histogram: Birth Year
+sns.histplot(df_sample['birth_year'], bins=30, kde=True, ax=axes[0,0], color='skyblue')
+axes[0,0].set_title('Distribution of Patient Birth Years')
+
+# 2. Box Plot: Severity by Sex
+sns.boxplot(x='sex', y='severity_index', data=df_sample, ax=axes[0,1], palette='Set2')
+axes[0,1].set_title('Clinical Severity Index by Gender')
+
+# 3. Bar Chart: Comorbidity Count
+sns.countplot(x='comorbidity_count', data=df_sample, ax=axes[1,0], palette='viridis')
+axes[1,0].set_title('Frequency of Comorbidity Counts')
+
+# 4. Pie Chart: Diabetes Prevalence
+diabetes_counts = df_sample['has_diabetes'].value_counts()
+axes[1,1].pie(diabetes_counts, labels=['No Diabetes', 'Diabetes'], autopct='%1.1f%%', colors=['lightgrey', 'orange'])
+axes[1,1].set_title('Prevalence of Diabetes')
+
+# 5. Heatmap: Vitals Correlation
+vitals = ['sbp_mmhg', 'dbp_mmhg', 'heart_rate_bpm', 'spo2_pct', 'bmi']
+sns.heatmap(df_sample[vitals].corr(), annot=True, cmap='coolwarm', ax=axes[2,0])
+axes[2,0].set_title('Clinical Vitals Correlation Matrix')
+
+axes[2,1].axis('off') 
+plt.tight_layout()
+plt.show()
+
+fig, axes = plt.subplots(3, 2, figsize=(16, 18))
+
+# 1. Histogram: Length of Stay
+sns.histplot(df_sample['los_days'], bins=20, ax=axes[0,0], color='salmon')
+axes[0,0].set_title('Distribution of Length of Stay (Days)')
+
+# 2. Bar Chart: Volume by Unit
+sns.countplot(y='unit_assigned', data=df_sample, ax=axes[0,1], order=df_sample['unit_assigned'].value_counts().index)
+axes[0,1].set_title('Patient Volume per Unit')
+
+# 3. Box Plot: Bed Occupancy by Unit
+sns.boxplot(x='unit_assigned', y='bed_occupancy_pct', data=df_sample, ax=axes[1,0])
+axes[1,0].set_title('Bed Occupancy Percentage by Unit')
+axes[1,0].tick_params(axis='x', rotation=45)
+
+# 4. Scatter Plot: Wait Time vs LOS
+sns.scatterplot(x='patient_reported_wait_time_mins', y='los_days', data=df_sample, alpha=0.1, ax=axes[1,1])
+axes[1,1].set_title('Wait Time vs. Length of Stay')
+
+# 5. Bar Chart: Telehealth Usage
+sns.countplot(x='telehealth_used_flag', data=df_sample, ax=axes[2,0], palette='pastel')
+axes[2,0].set_title('Telehealth vs. In-Person Visits')
+
+axes[2,1].axis('off')
+plt.tight_layout()
+plt.show()
+
+fig, axes = plt.subplots(3, 2, figsize=(16, 18))
+
+# 1. Bar Chart: Burnout by Nurse Role
+sns.barplot(x='nurse_role', y='burnout_exhaustion_mbi', data=df_sample, ax=axes[0,0])
+axes[0,0].set_title('Avg Burnout Exhaustion by Nurse Role')
+
+# 2. Scatter Plot: Staffing Ratio vs Safety
+sns.lineplot(x='patients_per_nurse_ratio', y='safety_incident_flag', data=df_sample, ax=axes[0,1])
+axes[0,1].set_title('Staffing Ratio vs. Probability of Safety Incident')
+
+# 3. Histogram: Overtime Hours
+sns.histplot(df_sample['overtime_hours'], bins=30, ax=axes[1,0], color='purple')
+axes[1,0].set_title('Distribution of Staff Overtime Hours')
+
+# 4. Box Plot: Turnover Risk by Unit
+sns.boxplot(x='nurse_unit', y='turnover_risk_index', data=df_sample, ax=axes[1,1])
+axes[1,1].tick_params(axis='x', rotation=45)
+axes[1,1].set_title('Staff Turnover Risk by Unit')
+
+# 5. Bar Chart: Shift Hours Distribution
+sns.countplot(x='shift_hours', data=df_sample, ax=axes[2,0], palette='magma')
+axes[2,0].set_title('Frequency of Shift Hour Lengths')
+
+axes[2,1].axis('off')
+plt.tight_layout()
+plt.show()
+
+import numpy as np
+
+fig, axes = plt.subplots(3, 2, figsize=(16, 18))
+
+# 1. Histogram: Submitted Charges (Log Scale for better visibility)
+sns.histplot(df_sample['submitted_charge_usd'], bins=50, ax=axes[0,0], color='green')
+axes[0,0].set_xscale('log')
+axes[0,0].set_title('Distribution of Charges (Log Scale)')
+
+# 2. Pie Chart: Upcoding Flags
+fraud_counts = df_sample['fraud_upcoding_flag'].value_counts()
+axes[0,1].pie(fraud_counts, labels=['Clean', 'Flagged'], autopct='%1.1f%%', startangle=90, colors=['lightblue', 'red'])
+axes[0,1].set_title('Upcoding Fraud Detection Rate')
+
+# 3. Bar Chart: Top Payers
+top_payers = df_sample['payer'].value_counts().head(5)
+sns.barplot(x=top_payers.index, y=top_payers.values, ax=axes[1,0])
+axes[1,0].set_title('Top 5 Insurance Payers')
+
+# 4. Box Plot: DRG Weight by Payer
+sns.boxplot(x='payer', y='drg_weight', data=df_sample[df_sample['payer'].isin(top_payers.index)], ax=axes[1,1])
+axes[1,1].set_title('Case Complexity (DRG Weight) per Payer')
+
+# 5. Bar Chart: Top Denial Reasons
+denial_reasons = df_sample['denial_reason_code'].value_counts().head(10)
+sns.barplot(x=denial_reasons.values, y=denial_reasons.index, ax=axes[2,0], palette='Reds_r')
+axes[2,0].set_title('Top 10 Claim Denial Reasons')
+
+axes[2,1].axis('off')
+plt.tight_layout()
+plt.show()
+
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+# 1. Box Plot: Responsiveness by Unit
+sns.boxplot(x='unit_assigned', y='cahps_responsiveness', data=df_sample, ax=axes[0,0])
+axes[0,0].set_title('Patient Responsiveness Scores by Unit')
+axes[0,0].tick_params(axis='x', rotation=45)
+
+# 2. Bar Chart: Cleanliness Ratings
+sns.countplot(x=pd.cut(df_sample['cahps_cleanliness'], bins=5), ax=axes[0,1], palette='GnBu')
+axes[0,1].set_title('Distribution of Cleanliness Scores')
+
+# 3. Scatter Plot: Discharge Info vs Med Adherence
+sns.scatterplot(x='cahps_discharge_info', y='medication_adherence_pdc', data=df_sample, alpha=0.1, ax=axes[1,0])
+axes[1,0].set_title('Discharge Instructions vs. Medication Adherence')
+
+# 4. Pie Chart: HEDIS Testing Compliance
+hedis_counts = df_sample['hedis_hba1c_tested'].value_counts()
+axes[1,1].pie(hedis_counts, labels=['Not Tested', 'Tested'], autopct='%1.1f%%', colors=['pink', 'lightgreen'])
+axes[1,1].set_title('HEDIS HbA1c Testing Compliance')
+
+plt.tight_layout()
+plt.show()
+
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Sampling for performance
+df_sample = df.sample(n=100000, random_state=42)
+df_sample['admit_timestamp'] = pd.to_datetime(df_sample['admit_timestamp'])
+
+# 1. Line Chart: Admission Trends by Generation
+# Grouping birth years into decades to make the line chart readable
+df_sample['birth_decade'] = (df_sample['birth_year'] // 10) * 10
+timeline = df_sample.groupby([df_sample['admit_timestamp'].dt.to_period('M'), 'birth_decade']).size().unstack()
+
+plt.figure(figsize=(14, 6))
+timeline.plot(kind='line', ax=plt.gca(), marker='o')
+plt.title('Monthly Admission Trends by Patient Birth Decade')
+plt.ylabel('Number of Encounters')
+plt.xlabel('Time (Monthly)')
+plt.legend(title='Birth Year Decade', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.grid(True)
+plt.show()
+
